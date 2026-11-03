@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v0.3.0
+_src_path: https://github.com/datalab-org/datalab-app-plugin-template
+author_email: jrneilson@gmail.com
+author_fullname: jrneilson
+copyright_date: '2026'
+copyright_holder: jrneilson
+copyright_holder_email: jrneilson@gmail.com
+package_name: datalab_app_plugin_ppms
+project_name: datalab-app-plugin-ppms
+repository_name: datalab-app-plugin-ppms
+repository_namespace: jrneilson
+short_description: datalab blocks for Quantum Design PPMS heat capacity data
+
