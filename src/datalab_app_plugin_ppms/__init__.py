@@ -1,6 +1,6 @@
 """datalab blocks for Quantum Design PPMS heat capacity data"""
 
 from ._version import __version__
-from .blocks import ExampleDataBlock
+from .blocks import PPMSHeatCapacityBlock
 
-__all__ = ("__version__", "ExampleDataBlock")
+__all__ = ("__version__", "PPMSHeatCapacityBlock")

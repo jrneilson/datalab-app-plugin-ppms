@@ -34,7 +34,7 @@ changelog = "https://github.com/jrneilson/datalab-app-plugin-ppms/releases"
 
 # Edit this entry point with any block classes implemented in this plugin
 [project.entry-points.'pydatalab.apps.plugins']
-example = "datalab_app_plugin_ppms.blocks:ExampleDataBlock"
+ppms-hc = "datalab_app_plugin_ppms.blocks:PPMSHeatCapacityBlock"
 
 [tool.setuptools.packages.find]
 where = ["src"]

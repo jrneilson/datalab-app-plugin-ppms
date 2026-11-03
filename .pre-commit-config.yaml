@@ -1,7 +1,7 @@
 default_language_version:
   python: python3.10
 
-exclude: '^example_data/'
+exclude: '^(example_data|tests/data)/'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
