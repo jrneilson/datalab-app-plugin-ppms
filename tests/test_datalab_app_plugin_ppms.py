@@ -123,7 +123,11 @@ def test_block_multi_field():
         ]
     )
     assert "errors" not in block.data
-    block.generate_plot(location=MULTI_FIELD)
+    for x_axis in ("T² (K²)", "T³ (K³)", "ln(T/K)", "T (K)"):
+        block.process_events({"event_name": "update_settings", "x_axis": x_axis})
+        block.generate_plot(location=MULTI_FIELD)
+    with pytest.raises(ValueError):
+        block.update_settings(x_axis="1/T")
     assert list(block.data["computed"]["entropy"]) == ["5 T", "9 T"]
     assert block.data["computed"]["entropy"]["9 T"]["J/(mol·K)"]["t_max"] <= 20
 

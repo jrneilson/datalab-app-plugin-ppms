@@ -44,7 +44,16 @@ NUMERIC_SETTINGS = (
     "entropy_t_end",
 )
 POSITIVE_SETTINGS = ("mass_mg", "molecular_weight")
+X_AXES = {
+    TEMPERATURE: lambda t: t,
+    "T² (K²)": lambda t: t**2,
+    "T³ (K³)": lambda t: t**3,
+    "ln(T/K)": np.log,
+}
+"""Plotted x axes and their functions of temperature."""
+
 CHOICE_SETTINGS = {
+    "x_axis": tuple(X_AXES),
     "flavor": tuple(FLAVORS),
     "unit": UNITS,
     "source_unit": tuple(SOURCE_UNITS),
@@ -189,7 +198,7 @@ class PPMSHeatCapacityBlock(DataBlock):
     )
     accepted_file_extensions = (".dat", ".txt", ".csv")
 
-    defaults = {"flavor": "Cp", "unit": "J/(mol·K)"}
+    defaults = {"x_axis": TEMPERATURE, "flavor": "Cp", "unit": "J/(mol·K)"}
 
     @property
     def plot_functions(self):
@@ -407,13 +416,15 @@ class PPMSHeatCapacityBlock(DataBlock):
         y_label, y_err_label = _y_columns(flavor, unit)
         has_field = FIELD in out
 
-        tooltips = [(TEMPERATURE, "@x{0.000}")]
+        x_axis = self.data.get("x_axis", TEMPERATURE)
+        x_of_t = X_AXES[x_axis]
+        tooltips = [(TEMPERATURE, "@t{0.000}")]
         if has_field:
             tooltips.append((FIELD, "@field{0.00}"))
         tooltips.append((y_label, "@y{0.0000e} ± @err{0.0e}"))
 
         p = figure(
-            x_axis_label=TEMPERATURE,
+            x_axis_label=f"{x_axis} ▾",
             y_axis_label=f"{y_label} ▾",
             sizing_mode="scale_width",
             aspect_ratio=1.5,
@@ -430,7 +441,8 @@ class PPMSHeatCapacityBlock(DataBlock):
             y = group[y_label].to_numpy()
             y_err = group[y_err_label].to_numpy()
             data = {
-                "x": group[TEMPERATURE].to_numpy(),
+                "x": x_of_t(group[TEMPERATURE].to_numpy()),
+                "t": group[TEMPERATURE].to_numpy(),
                 "y": y,
                 "upper": y + y_err,
                 "lower": y - y_err,
@@ -472,14 +484,24 @@ class PPMSHeatCapacityBlock(DataBlock):
                     f"mass ± {result['dS_err_mass']:.2g})"
                 )
         t_start, t_end = self.data.get("entropy_t_start"), self.data.get("entropy_t_end")
-        if t_start is not None or t_end is not None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            left, right = (
+                float(x) if t is not None and np.isfinite(x := x_of_t(t)) else None
+                for t in (t_start, t_end)
+            )
+        if left is not None or right is not None:
             p.add_layout(
-                BoxAnnotation(left=t_start, right=t_end, fill_alpha=0.08, fill_color="gray")
+                BoxAnnotation(
+                    left=left,
+                    right=right,
+                    fill_alpha=0.08,
+                    fill_color="gray",
+                )
             )
         entropy_text = "<b>Integrated entropy</b> ΔS = ∫ Cp/T dT<br>" + "<br>".join(lines)
 
         menus = {
-            "x": [],
+            "x": [{"label": x, "settings": {"x_axis": x}, "current": x == x_axis} for x in X_AXES],
             "y": [
                 {
                     "label": _y_columns(f, u)[0],
@@ -543,7 +565,7 @@ class PPMSHeatCapacityBlock(DataBlock):
             ),
             Div(text=entropy_text),
             export,
-            Div(text="Click the y axis to change what is plotted."),
+            Div(text="Click the x or y axis to change what is plotted."),
             p,
             sizing_mode="scale_width",
             css_classes=["ppms-block", f"ppms-{self.block_id}"],
