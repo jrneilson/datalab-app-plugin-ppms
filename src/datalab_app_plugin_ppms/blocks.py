@@ -20,6 +20,7 @@ from datalab_app_plugin_ppms.utils import (
     available_units,
     convert_heat_capacity,
     detect_column,
+    field_groups,
     guess_source_unit,
     integrate_entropy,
     numeric_columns,
@@ -28,6 +29,8 @@ from datalab_app_plugin_ppms.utils import (
 
 TEMPERATURE = "T (K)"
 FIELD = "Field (Oe)"
+FIELD_SETPOINT = "Field setpoint (Oe)"
+ALL_FIELDS = "all"
 NONE = "None"
 WIDGET_WIDTH = 240
 
@@ -136,6 +139,10 @@ WIDGET_STYLE = """<style>
 SUPERSCRIPTS = {1: "", 2: "²", 3: "³", 4: "⁴"}
 
 
+def _field_label(setpoint_oe: float) -> str:
+    return f"{setpoint_oe / 1e4:g} T"
+
+
 def _flavor_unit(flavor: str, unit: str) -> str:
     """The unit of Cp/Tⁿ given the unit of Cp, e.g. J/(mol·K) → J/(mol·K²) for Cp/T."""
     return unit.replace("K", "K" + SUPERSCRIPTS[1 + FLAVORS[flavor]])
@@ -206,14 +213,18 @@ class PPMSHeatCapacityBlock(DataBlock):
                 raise ValueError(f"Unknown setting {key!r}")
 
     def _prefill_from_header(self, header: dict[str, str]):
-        """Fill sample mass and molecular weight from the file header the first time it is read."""
-        for key, header_key in (
-            ("mass_mg", "SAMPLE_MASS"),
-            ("molecular_weight", "SAMPLE_MOLECULAR_WEIGHT"),
+        """Fill sample mass, its uncertainty and molecular weight from the file header the
+        first time it is read. Quantum Design header keys look like `MASS:Sample Mass (mg)`.
+        """
+        codes = {k.split(":")[0].strip(): v for k, v in header.items()}
+        for key, code in (
+            ("mass_mg", "MASS"),
+            ("mass_err_mg", "MASSERR"),
+            ("molecular_weight", "MOLWGHT"),
         ):
             if key not in self.data:
                 try:
-                    self.data[key] = _parse_float(key, header.get(header_key))
+                    self.data[key] = _parse_float(key, codes.get(code))
                 except ValueError:
                     self.data[key] = None
 
@@ -240,19 +251,21 @@ class PPMSHeatCapacityBlock(DataBlock):
 
     def compute(self, df: pd.DataFrame) -> tuple[pd.DataFrame, str, dict[str, dict]]:
         """Convert and filter the raw data according to the block settings, and integrate
-        the entropy in each available unit.
+        the entropy separately for each field setpoint in each available unit.
 
         Returns:
-            A DataFrame with temperature, field (if any), the raw heat capacity and every
-            flavor in every unit that can be computed from the given sample parameters;
-            the unit actually used for plotting; and the entropy results keyed by unit
-            (or an `error` message if the integration was not possible).
+            A DataFrame with temperature, field and field setpoint (if any), the raw heat
+            capacity and every flavor in every unit that can be computed from the given
+            sample parameters; the unit actually used for plotting; and the entropy results
+            keyed by field setpoint label (`ALL_FIELDS` without a field column) and then by
+            unit (or an `error` message if the integration was not possible).
 
         """
         self._resolve_columns(df)
 
         field_column = self.data["field_column"]
-        mask = np.ones(len(df), dtype=bool)
+        # e.g. comment rows in Quantum Design files
+        mask = df[self.data["hc_column"]].notna().to_numpy()
         if field_column != NONE:
             if (lower := self.data.get("filter_field_min")) is not None:
                 mask &= df[field_column].to_numpy() >= lower
@@ -264,6 +277,7 @@ class PPMSHeatCapacityBlock(DataBlock):
         out[TEMPERATURE] = df[self.data["temperature_column"]]
         if field_column != NONE:
             out[FIELD] = df[field_column]
+            out[FIELD_SETPOINT] = field_groups(out[FIELD])
         hc = df[self.data["hc_column"]].to_numpy(dtype=float)
         error_column = self.data["error_column"]
         hc_err = None if error_column == NONE else df[error_column].to_numpy(dtype=float)
@@ -279,7 +293,14 @@ class PPMSHeatCapacityBlock(DataBlock):
         }
         units = available_units(source_unit, sample["mass_mg"], sample["molecular_weight"])
         temperature = out[TEMPERATURE].to_numpy(dtype=float)
-        entropy: dict[str, dict] = {}
+        if field_column != NONE:
+            groups = {
+                _field_label(h): (out[FIELD_SETPOINT] == h).to_numpy()
+                for h in sorted(out[FIELD_SETPOINT].dropna().unique())
+            }
+        else:
+            groups = {ALL_FIELDS: np.ones(len(out), dtype=bool)}
+        entropy: dict[str, dict] = {label: {} for label in groups}
         for unit in units:
             cp, cp_err, mass_rel_err = convert_heat_capacity(
                 hc, hc_err, source_unit, unit, **sample
@@ -290,17 +311,18 @@ class PPMSHeatCapacityBlock(DataBlock):
                     out[y_label] = cp / temperature**power
                     # the mass uncertainty is common to all points and included here too
                     out[y_err_label] = np.hypot(cp_err, cp * mass_rel_err) / temperature**power
-            try:
-                entropy[unit] = integrate_entropy(
-                    temperature,
-                    cp,
-                    cp_err,
-                    mass_rel_err,
-                    self.data.get("entropy_t_start"),
-                    self.data.get("entropy_t_end"),
-                )
-            except ValueError as exc:
-                entropy[unit] = {"error": str(exc)}
+            for label, in_group in groups.items():
+                try:
+                    entropy[label][unit] = integrate_entropy(
+                        temperature[in_group],
+                        cp[in_group],
+                        cp_err[in_group],
+                        mass_rel_err,
+                        self.data.get("entropy_t_start"),
+                        self.data.get("entropy_t_end"),
+                    )
+                except ValueError as exc:
+                    entropy[label][unit] = {"error": str(exc)}
 
         unit = self.data.get("unit", "J/(mol·K)")
         if unit not in units:
@@ -313,7 +335,10 @@ class PPMSHeatCapacityBlock(DataBlock):
             unit = fallback
 
         self.data["computed"] = {
-            "entropy": {u: r for u, r in entropy.items() if "error" not in r},
+            "entropy": {
+                label: {u: r for u, r in results.items() if "error" not in r}
+                for label, results in entropy.items()
+            },
         }
         return out, unit, entropy
 
@@ -354,10 +379,13 @@ class PPMSHeatCapacityBlock(DataBlock):
             CustomJS,
             Div,
             HoverTool,
+            Legend,
             Select,
+            TeeHead,
             TextInput,
             Whisker,
         )
+        from bokeh.palettes import Category10_10
         from bokeh.plotting import figure
 
         def text_input(key: str, title: str) -> TextInput:
@@ -379,21 +407,10 @@ class PPMSHeatCapacityBlock(DataBlock):
         y_label, y_err_label = _y_columns(flavor, unit)
         has_field = FIELD in out
 
-        y = out[y_label].to_numpy()
-        y_err = out[y_err_label].to_numpy()
-        data = {
-            "x": out[TEMPERATURE].to_numpy(),
-            "y": y,
-            "upper": y + y_err,
-            "lower": y - y_err,
-            "err": y_err,
-        }
         tooltips = [(TEMPERATURE, "@x{0.000}")]
         if has_field:
-            data["field"] = out[FIELD].to_numpy()
             tooltips.append((FIELD, "@field{0.00}"))
         tooltips.append((y_label, "@y{0.0000e} ± @err{0.0e}"))
-        source = ColumnDataSource(data)
 
         p = figure(
             x_axis_label=TEMPERATURE,
@@ -401,25 +418,65 @@ class PPMSHeatCapacityBlock(DataBlock):
             sizing_mode="scale_width",
             aspect_ratio=1.5,
         )
-        p.circle("x", "y", source=source, size=4)
-        p.add_layout(Whisker(source=source, base="x", upper="upper", lower="lower", line_alpha=0.5))
-        p.add_tools(HoverTool(tooltips=tooltips))
-
-        result = entropy.get(unit, {"error": "No data"})
-        if "error" in result:
-            entropy_text = f"<b>Integrated entropy:</b> {result['error']}"
+        legend_items = []
+        if has_field:
+            groups = [
+                (out[out[FIELD_SETPOINT] == h], _field_label(h))
+                for h in sorted(out[FIELD_SETPOINT].dropna().unique())
+            ]
         else:
+            groups = [(out, ALL_FIELDS)]
+        for i, (group, label) in enumerate(groups):
+            y = group[y_label].to_numpy()
+            y_err = group[y_err_label].to_numpy()
+            data = {
+                "x": group[TEMPERATURE].to_numpy(),
+                "y": y,
+                "upper": y + y_err,
+                "lower": y - y_err,
+                "err": y_err,
+            }
+            if has_field:
+                data["field"] = group[FIELD].to_numpy()
+            source = ColumnDataSource(data)
+            color = Category10_10[i % len(Category10_10)]
+            renderer = p.circle("x", "y", source=source, size=4, color=color)
             p.add_layout(
-                BoxAnnotation(
-                    left=result["t_min"], right=result["t_max"], fill_alpha=0.08, fill_color="gray"
+                Whisker(
+                    source=source,
+                    base="x",
+                    upper="upper",
+                    lower="lower",
+                    line_color=color,
+                    line_alpha=0.5,
+                    upper_head=TeeHead(line_color=color, line_alpha=0.5, size=6),
+                    lower_head=TeeHead(line_color=color, line_alpha=0.5, size=6),
                 )
             )
-            entropy_text = (
-                f"<b>Integrated entropy</b> ΔS = ∫ Cp/T dT from {result['t_min']:g} to "
-                f"{result['t_max']:g} K ({result['n_points']} points): "
-                f"<b>{result['dS']:.5g} ± {result['dS_err']:.2g} {unit}</b> "
-                f"(statistical ± {result['dS_err_stat']:.2g}, mass ± {result['dS_err_mass']:.2g})"
+            legend_items.append((label, [renderer]))
+        p.add_tools(HoverTool(tooltips=tooltips))
+        if has_field:
+            p.add_layout(Legend(items=legend_items, click_policy="hide"), "right")
+
+        lines = []
+        for label, results in entropy.items():
+            result = results.get(unit, {"error": "No data"})
+            prefix = "" if label == ALL_FIELDS else f"{label}: "
+            if "error" in result:
+                lines.append(f"{prefix}{result['error']}")
+            else:
+                lines.append(
+                    f"{prefix}<b>{result['dS']:.5g} ± {result['dS_err']:.2g} {unit}</b> "
+                    f"from {result['t_min']:g} to {result['t_max']:g} K "
+                    f"({result['n_points']} points; statistical ± {result['dS_err_stat']:.2g}, "
+                    f"mass ± {result['dS_err_mass']:.2g})"
+                )
+        t_start, t_end = self.data.get("entropy_t_start"), self.data.get("entropy_t_end")
+        if t_start is not None or t_end is not None:
+            p.add_layout(
+                BoxAnnotation(left=t_start, right=t_end, fill_alpha=0.08, fill_color="gray")
             )
+        entropy_text = "<b>Integrated entropy</b> ΔS = ∫ Cp/T dT<br>" + "<br>".join(lines)
 
         menus = {
             "x": [],

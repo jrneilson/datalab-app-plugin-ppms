@@ -7,12 +7,24 @@ import numpy as np
 import pandas as pd
 
 TEMPERATURE_CANDIDATES = ("Sample Temp (Kelvin)", "Sample Temp (K)", "Temperature (K)", "T")
-HC_CANDIDATES = ("Samp HC (µJ/K)", "Samp HC (uJ/K)", "µJ/K", "uJ/K")
+HC_CANDIDATES = (
+    "Samp HC (µJ/K)",
+    "Samp HC (uJ/K)",
+    "HCSample (µJ/K)",
+    "Samp HC (J/mole-K)",
+    "Samp HC (J/g-K)",
+    "µJ/K",
+    "uJ/K",
+)
 ERROR_CANDIDATES = {
     "Samp HC (µJ/K)": "Samp HC Err (µJ/K)",
     "Samp HC (uJ/K)": "Samp HC Err (uJ/K)",
+    "Samp HC (J/mole-K)": "Samp HC Err (J/mole-K)",
+    "Samp HC (J/g-K)": "Samp HC Err (J/g-K)",
 }
 FIELD_CANDIDATES = ("Field (Oersted)", "Field (Oe)", "Magnetic Field (Oe)")
+FIELD_TOLERANCE_OE = 100
+"""Fields closer than this (Oe) to the next one are treated as the same field setpoint."""
 
 SOURCE_UNITS = {
     # unit of the heat capacity column: (scale to J, basis)
@@ -58,6 +70,11 @@ def parse_hc_file(location: str | Path) -> tuple[pd.DataFrame, dict[str, str]]:
     df = pd.read_csv(io.StringIO("\n".join(lines)), sep=None, engine="python")
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(axis="columns", how="all")
+
+    qd_columns = ("Total HC (µJ/K)", "Addenda HC (µJ/K)", "Total HC Err (µJ/K)")
+    if "Samp HC (µJ/K)" not in df and all(c in numeric_columns(df) for c in qd_columns):
+        df["Samp HC (µJ/K)"] = df["Total HC (µJ/K)"] - df["Addenda HC (µJ/K)"]
+        df["Samp HC Err (µJ/K)"] = df["Total HC Err (µJ/K)"]
     return df, header
 
 
@@ -70,6 +87,20 @@ def detect_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
     """Return the first candidate column that is present with numeric data."""
     available = numeric_columns(df)
     return next((c for c in candidates if c in available), None)
+
+
+def field_groups(field: np.ndarray, tolerance: float = FIELD_TOLERANCE_OE) -> np.ndarray:
+    """Label each point with the mean of its field setpoint, rounded to 10 Oe, grouping
+    sorted fields that are within `tolerance` of their neighbour. NaN fields stay NaN.
+    """
+    field = np.asarray(field, dtype=float)
+    labels = np.full_like(field, np.nan)
+    finite = np.flatnonzero(np.isfinite(field))
+    order = finite[np.argsort(field[finite])]
+    for group in np.split(order, np.flatnonzero(np.diff(field[order]) > tolerance) + 1):
+        if len(group):
+            labels[group] = np.round(field[group].mean(), -1) + 0.0  # avoid -0
+    return labels
 
 
 def guess_source_unit(column: str) -> str:
