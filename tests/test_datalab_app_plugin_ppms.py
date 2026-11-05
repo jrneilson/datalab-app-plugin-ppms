@@ -141,7 +141,7 @@ def test_block_other_formats():
     block = PPMSHeatCapacityBlock(item_id="test")
     with pytest.warns(UserWarning, match="mass and molecular weight"):
         block.generate_plot(location=PER_GRAM)
-    assert block.data["molecular_weight"] is None
+    assert block._number("molecular_weight") is None
     assert list(block.data["computed"]["entropy"]["0 T"]) == ["J/(g·K)", "J/K"]
 
     block = PPMSHeatCapacityBlock(item_id="test")
@@ -150,3 +150,20 @@ def test_block_other_formats():
     assert block.data["hc_column"] == "HCSample (µJ/K)"
     assert block.data["error_column"] == "None"
     assert list(block.data["computed"]["entropy"]) == ["9 T"]
+
+
+def test_cleared_filters_stay_cleared():
+    """Emulate datalab's web app, which merges each server response into its stored copy of
+    the block (`Object.assign`) and sends that copy back with the next event."""
+    stored = PPMSHeatCapacityBlock(item_id="test").to_web()
+    for event in (
+        {"filter_field_min": "1", "filter_field_max": "2"},
+        {"filter_field_min": ""},
+        {"filter_field_max": ""},
+    ):
+        block = PPMSHeatCapacityBlock.from_web(dict(stored))
+        block.process_events({"event_name": "update_settings", **event})
+        stored.update(block.to_web())
+    block = PPMSHeatCapacityBlock.from_web(dict(stored))
+    assert block._number("filter_field_min") is None
+    assert block._number("filter_field_max") is None

@@ -173,6 +173,11 @@ def _js_update_setting(key: str, block_id: str) -> str:
     )
 
 
+CLEARED = ""
+"""Stored for a cleared numeric setting. datalab drops `None` values when it sends the block
+to the browser, which then keeps (and later sends back) the old value; "" replaces it."""
+
+
 def _parse_float(key: str, value) -> float | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -204,12 +209,18 @@ class PPMSHeatCapacityBlock(DataBlock):
     def plot_functions(self):
         return (self.generate_plot,)
 
+    def _number(self, key: str) -> float | None:
+        """A numeric setting, or None if it is unset or cleared."""
+        value = self.data.get(key)
+        return None if value in (None, CLEARED) else float(value)
+
     @event()
     def update_settings(self, **kwargs):
         """Update one or more block settings from the plot widgets."""
         for key, value in kwargs.items():
             if key in NUMERIC_SETTINGS:
-                self.data[key] = _parse_float(key, value)
+                parsed = _parse_float(key, value)
+                self.data[key] = CLEARED if parsed is None else parsed
             elif key in CHOICE_SETTINGS:
                 allowed = CHOICE_SETTINGS[key]
                 if allowed is not None and value not in allowed:
@@ -233,9 +244,10 @@ class PPMSHeatCapacityBlock(DataBlock):
         ):
             if key not in self.data:
                 try:
-                    self.data[key] = _parse_float(key, codes.get(code))
+                    parsed = _parse_float(key, codes.get(code))
+                    self.data[key] = CLEARED if parsed is None else parsed
                 except ValueError:
-                    self.data[key] = None
+                    self.data[key] = CLEARED
 
     def _resolve_columns(self, df: pd.DataFrame):
         """Choose the temperature, heat capacity, error and field columns, keeping valid choices."""
@@ -276,9 +288,9 @@ class PPMSHeatCapacityBlock(DataBlock):
         # e.g. comment rows in Quantum Design files
         mask = df[self.data["hc_column"]].notna().to_numpy()
         if field_column != NONE:
-            if (lower := self.data.get("filter_field_min")) is not None:
+            if (lower := self._number("filter_field_min")) is not None:
                 mask &= df[field_column].to_numpy() >= lower
-            if (upper := self.data.get("filter_field_max")) is not None:
+            if (upper := self._number("filter_field_max")) is not None:
                 mask &= df[field_column].to_numpy() <= upper
         df = df[mask].reset_index(drop=True)
 
@@ -296,9 +308,9 @@ class PPMSHeatCapacityBlock(DataBlock):
             out[f"σHC ({source_unit})"] = hc_err
 
         sample = {
-            "mass_mg": self.data.get("mass_mg"),
-            "mass_err_mg": self.data.get("mass_err_mg"),
-            "molecular_weight": self.data.get("molecular_weight"),
+            "mass_mg": self._number("mass_mg"),
+            "mass_err_mg": self._number("mass_err_mg"),
+            "molecular_weight": self._number("molecular_weight"),
         }
         units = available_units(source_unit, sample["mass_mg"], sample["molecular_weight"])
         temperature = out[TEMPERATURE].to_numpy(dtype=float)
@@ -327,8 +339,8 @@ class PPMSHeatCapacityBlock(DataBlock):
                         cp[in_group],
                         cp_err[in_group],
                         mass_rel_err,
-                        self.data.get("entropy_t_start"),
-                        self.data.get("entropy_t_end"),
+                        self._number("entropy_t_start"),
+                        self._number("entropy_t_end"),
                     )
                 except ValueError as exc:
                     entropy[label][unit] = {"error": str(exc)}
@@ -398,7 +410,7 @@ class PPMSHeatCapacityBlock(DataBlock):
         from bokeh.plotting import figure
 
         def text_input(key: str, title: str) -> TextInput:
-            value = self.data.get(key)
+            value = self._number(key)
             widget = TextInput(
                 title=title, value="" if value is None else f"{value:g}", width=WIDGET_WIDTH
             )
@@ -483,7 +495,7 @@ class PPMSHeatCapacityBlock(DataBlock):
                     f"({result['n_points']} points; statistical ± {result['dS_err_stat']:.2g}, "
                     f"mass ± {result['dS_err_mass']:.2g})"
                 )
-        t_start, t_end = self.data.get("entropy_t_start"), self.data.get("entropy_t_end")
+        t_start, t_end = self._number("entropy_t_start"), self._number("entropy_t_end")
         with np.errstate(divide="ignore", invalid="ignore"):
             left, right = (
                 float(x) if t is not None and np.isfinite(x := x_of_t(t)) else None
