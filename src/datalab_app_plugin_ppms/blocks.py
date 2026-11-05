@@ -83,7 +83,44 @@ link.click();
 document.body.removeChild(link);
 """
 
-AXIS_MENU_CALLBACK = """
+KEEP_SCROLL_POSITION = """
+// datalab removes the old plot before the new one has rendered, which shortens the page and
+// moves the scroll position. Hold the plot's height until the new plot has laid out (its
+// height is unchanged between two checks), then restore the scroll position.
+function keep_scroll_position(selector) {
+    const old = document.querySelector(selector);
+    if (!old) return;
+    let scroller = old.parentElement;
+    while (scroller && !(scroller.scrollHeight > scroller.clientHeight &&
+            /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+        scroller = scroller.parentElement;
+    }
+    scroller = scroller || document.scrollingElement;
+    const top = scroller.scrollTop;
+    const holder = old.parentElement;
+    holder.style.minHeight = holder.offsetHeight + "px";
+    const start = Date.now();
+    let last = -1;
+    const restore = () => {
+        const current = document.querySelector(selector);
+        const height = current && current !== old ? current.offsetHeight : -1;
+        if (height > 0 && height === last) {
+            holder.style.minHeight = "";
+            scroller.scrollTop = top;
+        } else if (Date.now() - start < 30000) {
+            last = height;
+            setTimeout(restore, 100);
+        } else {
+            holder.style.minHeight = "";
+        }
+    };
+    setTimeout(restore, 100);
+}
+"""
+
+AXIS_MENU_CALLBACK = (
+    KEEP_SCROLL_POSITION
+    + """
 // Open a menu of plot choices when the x or y axis (outside the plot frame) is clicked.
 const [x0, x1] = [Math.min(xr.start, xr.end), Math.max(xr.start, xr.end)];
 const [y0, y1] = [Math.min(yr.start, yr.end), Math.max(yr.start, yr.end)];
@@ -116,6 +153,7 @@ for (const option of options) {
     item.onclick = (e) => {
         e.stopPropagation();
         menu.remove();
+        keep_scroll_position(".ppms-" + block_id);
         const detail = Object.assign({block_id: block_id, event_name: "update_settings"}, option.settings);
         document.dispatchEvent(new CustomEvent("block-event", {detail: detail, bubbles: true}));
     };
@@ -129,6 +167,7 @@ setTimeout(() => document.addEventListener("pointerdown", function close(e) {
     }
 }), 0);
 """
+)
 
 # datalab restyles Bokeh widgets with Bootstrap classes after rendering, which changes their
 # size after Bokeh has laid them out; restore Bokeh's geometry within this block.
@@ -167,6 +206,7 @@ def _js_update_setting(key: str, block_id: str) -> str:
     """A Bokeh JS callback that sends a widget's value to the block's `update_settings` event."""
     detail = {"block_id": block_id, "event_name": "update_settings"}
     return (
+        KEEP_SCROLL_POSITION + f"keep_scroll_position({json.dumps('.ppms-' + block_id)});\n"
         f"const detail = {json.dumps(detail)};\n"
         f"detail[{json.dumps(key)}] = (cb_obj.value ?? cb_obj.text);\n"
         "document.dispatchEvent(new CustomEvent('block-event', {detail: detail, bubbles: true}));"
